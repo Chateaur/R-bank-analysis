@@ -1,0 +1,597 @@
+---
+title: "R Project"
+author: "Armand Leopold - Florent Bacque - Romain Chateau"
+date: "14 novembre 2016"
+output: html_document
+---
+
+***
+
+## Loading packages
+```{r message = FALSE}
+require(pROC)
+require(class)
+require(randomForest)
+require(e1071)
+require(tree)
+require(CORElearn)
+require(dplyr)
+require(ggplot2)
+require(ggthemes)
+```
+
+***
+
+## Loading dataset
+
+```{r}
+dataset <- read.csv("bank.csv", header=TRUE, sep = ";")
+dataset$contact <- NULL
+names(dataset)
+str(dataset)
+```
+
+***
+
+## Sampling
+
+```{r}
+set.seed(1)
+test <- sample(nrow(dataset), round(nrow(dataset) * 0.33))
+test.dataset <- dataset[test,]
+train.dataset <- dataset[-test,]
+
+train <- sample(nrow(train.dataset), round(nrow(train.dataset) * 0.50))
+train.baseline <- train.dataset[train,]
+train.stacking <- train.dataset[-train,]
+```
+
+***
+
+## Data Analysis
+
+> Month influence
+
+We will try to determinate the months when customer are most likely to subscribed a term deposit.
+
+```{r}
+month <- vector()
+month.ratio <- vector()
+
+for(i in levels(test.dataset[,"month"])){
+    
+    temp.month.rows <- which(test.dataset[,"month"] == i)
+    temp.month.dataset <- test.dataset[temp.month.rows,]
+    
+    temp.deposit <- rep(0, nrow(temp.month.dataset))
+    temp.deposit[temp.month.dataset[,"y"] == "yes"] <- 1
+    
+    temp.ratio <- sum(temp.deposit)/length(temp.deposit)
+    
+    month <- c(month, i)
+    month.ratio <- c(month.ratio, temp.ratio)
+}
+
+month.order <- c(5,4,8,1,9,7,6,2,12,11,10,3)
+ordered.month <- month[month.order]
+ordered.month.ratio <- month.ratio[month.order]
+
+month.data.frame <- as.data.frame(cbind(ordered.month, ordered.month.ratio))
+colnames(month.data.frame) <- c("month", "ratio")
+
+month.data.frame$ratio <- as.numeric(as.character(month.data.frame$ratio))
+month.data.frame$month <- factor(month.data.frame$month, levels = month.data.frame$month)
+
+month.plot <- ggplot(month.data.frame, aes(x = month, y = ratio, fill = ratio)) + geom_bar(stat='identity') + theme_few()
+print(month.plot)
+``` 
+
+The best months for a curtomer to suscribe a term deposit are december, march and october.
+
+> Age influence
+
+We will try to determinate the age when customer are most likely to subscribed a term deposit.
+We will separate the age in 4 categories :
+19 - 29 ans
+30 - 39 ans
+40 - 59 ans
+\> 60 ans
+
+```{r}
+age29.rows <- which(test.dataset[,"age"] <= 29)
+age29.dataset <- test.dataset[age29.rows,]
+age29.deposit <- rep(0, nrow(age29.dataset))
+age29.deposit[age29.dataset[,"y"] == "yes"] <- 1
+age29.ratio <- sum(age29.deposit)/length(age29.deposit)
+
+age39.rows <- which(test.dataset[,"age"] <= 39 & test.dataset[,"age"] > 29)
+age39.dataset <- test.dataset[age39.rows,]
+age39.deposit <- rep(0, nrow(age39.dataset))
+age39.deposit[age39.dataset[,"y"] == "yes"] <- 1
+age39.ratio <- sum(age39.deposit)/length(age39.deposit)
+
+age59.rows <- which(test.dataset[,"age"] <= 59 & test.dataset[,"age"] > 39)
+age59.dataset <- test.dataset[age59.rows,]
+age59.deposit <- rep(0, nrow(age59.dataset))
+age59.deposit[age59.dataset[,"y"] == "yes"] <- 1
+age59.ratio <- sum(age59.deposit)/length(age59.deposit)
+
+age60.rows <- which(test.dataset[,"age"] > 59)
+age60.dataset <- test.dataset[age60.rows,]
+age60.deposit <- rep(0, nrow(age60.dataset))
+age60.deposit[age60.dataset[,"y"] == "yes"] <- 1
+age60.ratio <- sum(age60.deposit)/length(age60.deposit)
+
+
+ages <- c("age19.29", "age29.39", "age39.59", "age60.99")
+ratio <- c(age29.ratio, age39.ratio, age59.ratio, age60.ratio)
+
+age.data.frame <- as.data.frame(cbind(ages, ratio))
+age.data.frame$ratio <- as.numeric(as.character(age.data.frame$ratio))
+
+age.plot <- ggplot(age.data.frame, aes(x = ages, y = ratio, fill = ratio)) + geom_bar(stat='identity') + theme_few()
+print(age.plot)
+```
+
+We can see that the main categories are the older customer, and then the younger.
+
+> Job influence
+
+We will try to determinate the jobs that are the most likely to subscribed a term deposit.
+
+```{r}
+job <- vector()
+ratio <- vector()
+
+for(i in levels(test.dataset[,"job"])){
+    
+    temp.job.rows <- which(test.dataset[,"job"] == i)
+    temp.job.dataset <- test.dataset[temp.job.rows,]
+    
+    temp.deposit <- rep(0, nrow(temp.job.dataset))
+    temp.deposit[temp.job.dataset[,"y"] == "yes"] <- 1
+    
+    temp.ratio <- sum(temp.deposit)/length(temp.deposit)
+    
+    job <- c(job, i)
+    ratio <- c(ratio, temp.ratio)
+}
+
+job.data.frame <- as.data.frame(cbind(job, ratio))
+job.data.frame$ratio <- as.numeric(as.character(job.data.frame$ratio))
+
+job.plot <- ggplot(job.data.frame, aes(x = job, y = ratio, fill = ratio)) + geom_bar(stat='identity') + theme_few() + theme(axis.text.x=element_text(angle=45,hjust=1,vjust=1))
+print(job.plot)
+```
+
+We can see here that the jobs who have the best ratio are the retired, the students and the entrepreneurs.
+We can emphasize the fact that this resutlts tie in with the logistical regregression coefficients we can see in the summary below.
+
+***
+
+## Logistic Regression
+
+```{r}
+glm.fit=glm(y~ ., data=train.baseline, family=binomial)
+summary(glm.fit)
+
+glm.probs <- predict(glm.fit, test.dataset, type="response")
+
+glm.pred <- rep("No", nrow(test.dataset))
+glm.pred[glm.probs > 0.5]="Yes"
+
+logistical.confusion.matrix <- table(glm.pred, test.dataset[,"y"])
+print(logistical.confusion.matrix)
+
+logistical.classifier.accuracy <- sum(diag(logistical.confusion.matrix)) / sum(logistical.confusion.matrix)
+print(logistical.classifier.accuracy)
+
+logistical.roc <- roc(y ~ glm.probs, data = test.dataset)
+plot(logistical.roc)
+
+logistical.auc <- auc(y ~ glm.probs, data = test.dataset)
+print(logistical.auc)
+```
+
+***
+
+## Random Forest
+
+```{r}
+rf.fit = randomForest(y~., data = train.baseline, mtry = 4, ntree=1000)
+print(rf.fit)
+
+rf.pred = predict(rf.fit, test.dataset, type = "response")
+
+rf.confusion.matrix <- table(rf.pred, test.dataset[,"y"])
+print(rf.confusion.matrix)
+
+rf.classifier.accuracy <- sum(diag(rf.confusion.matrix)) / sum(rf.confusion.matrix)
+print(rf.classifier.accuracy)
+
+roc.rf.pred <- rep(0, nrow(test.dataset))
+roc.rf.pred[rf.pred == "yes"] <- 1
+
+roc.test.dataset <- rep(0, nrow(test.dataset)) 
+roc.test.dataset[test.dataset[,"y"] == "yes"] <- 1
+
+rf.roc <- roc(roc.test.dataset, roc.rf.pred)
+plot(rf.roc)
+
+rf.auc <- auc(roc.test.dataset, roc.rf.pred)
+print(rf.auc)
+```
+
+> Get variable importance on RF
+
+```{r}
+rf.importance <- importance(rf.fit)
+varImportance <- data.frame(Variables = row.names(rf.importance), 
+                            Importance = round(rf.importance[ ,'MeanDecreaseGini'],2))
+
+# Create a rank variable based on importance
+rankImportance <- varImportance %>%
+  mutate(Rank = paste0('#',dense_rank(desc(Importance))))
+
+# Use ggplot2 to visualize the relative importance of variables
+ggplot(rankImportance, aes(x = reorder(Variables, Importance), 
+    y = Importance, fill = Importance)) +
+  geom_bar(stat='identity') + 
+  labs(x = 'Variables') +
+  coord_flip() + 
+  theme_few()
+```
+
+***
+
+## Classification tree
+
+```{r}
+# fitting
+tr.fit = tree(y~., train.baseline)
+
+# plotting tree
+plot(tr.fit)
+text(tr.fit, pretty = 1)
+
+# making predictions
+tr.pred = as.data.frame(predict(tr.fit, test.dataset, type = "vector"))
+
+# disctretizing probabilities
+tr.values.pred <- rep("no", nrow(test.dataset))
+tr.values.pred[tr.pred$yes > 0.5]="yes"
+
+# making confusion matrix
+tr.confusion.matrix <- table(tr.values.pred, test.dataset[,"y"])
+print(tr.confusion.matrix)
+
+# calculating classifier accuracy
+tr.classifier.accuracy <- sum(diag(tr.confusion.matrix)) / sum(tr.confusion.matrix)
+print(tr.classifier.accuracy)
+
+# evaluating miss-classification rate
+set.seed(3)
+cv.tr.fit=cv.tree(tr.fit,FUN=prune.misclass)
+par(mfrow=c(1,2))
+plot(cv.tr.fit$size,cv.tr.fit$dev,type="b")
+plot(cv.tr.fit$k,cv.tr.fit$dev,type="b")
+
+# getting best value
+prune.tr.fit=prune.misclass(tr.fit,best=2)
+plot(prune.tr.fit)
+text(prune.tr.fit,pretty = 1)
+
+# making predictions
+tr.pred = as.data.frame(predict(prune.tr.fit, test.dataset, type = "vector"))
+
+# disctretizing probabilities
+tr.values.pred <- rep("no", nrow(test.dataset))
+tr.values.pred[tr.pred$yes > 0.5]="yes"
+
+# making confusion matrix
+tr.confusion.matrix <- table(tr.values.pred, test.dataset[,"y"])
+print(tr.confusion.matrix)
+
+# calculating classifier accuracy
+tr.classifier.accuracy <- sum(diag(tr.confusion.matrix)) / sum(tr.confusion.matrix)
+print(tr.classifier.accuracy)
+
+```
+
+##Na?ve Bayes
+
+```{r}
+nb.fit=naiveBayes(y~ ., data=train.baseline)
+summary(nb.fit)
+
+nb.probs <- predict(nb.fit, test.dataset, type="raw")[,2]
+
+nb.pred <- predict(nb.fit, test.dataset, type="class")
+
+nb.confusion.matrix <- table(nb.pred, test.dataset[,"y"])
+print(nb.confusion.matrix)
+
+nb.classifier.accuracy <- sum(diag(nb.confusion.matrix)) / sum(nb.confusion.matrix)
+print(nb.classifier.accuracy)
+
+nb.roc <- roc(y ~ nb.probs, data = test.dataset)
+plot(nb.roc)
+
+nb.auc <- auc(y ~ nb.probs, data = test.dataset)
+print(nb.auc)
+```
+
+##Stacking
+
+> Predict using train stacking dataset with previous algorithms
+
+```{r}
+rf.stacking.train.probs <- predict(rf.fit, train.stacking, type="prob")[,2]
+glm.stacking.train.probs <- predict(glm.fit, train.stacking, type="response")
+nb.stacking.train.probs <- predict(nb.fit, train.stacking, type="raw")[,2]
+tr.stacking.train.probs <- predict(tr.fit, train.stacking, type = "vector")[,2]
+```
+
+> Predict using test dataset with previous algorithms
+
+```{r}
+rf.stacking.test.probs <- predict(rf.fit, test.dataset, type="prob")[,2]
+glm.stacking.test.probs <- predict(glm.fit, test.dataset, type="response")
+nb.stacking.test.probs <- predict(nb.fit, test.dataset, type="raw")[,2]
+tr.stacking.test.probs <- predict(tr.fit, test.dataset, type = "vector")[,2]
+```
+
+> Gather data
+
+```{r}
+stacking.data.train <- data.frame("Random Forest"=rf.stacking.train.probs, "Logistic Regression" = glm.stacking.train.probs, "Na?ve Bayes"=nb.stacking.train.probs, "Classification tree"=tr.stacking.train.probs,"y"=train.stacking[,"y"])
+
+stacking.data.test <- data.frame("Random Forest"=rf.stacking.test.probs, "Logistic Regression" = glm.stacking.test.probs, "Na?ve Bayes"=nb.stacking.test.probs, "Classification tree"=tr.stacking.test.probs,"y"=test.dataset[,"y"])
+```
+
+> Build logistic regression model
+
+```{r}
+glm.stacking.fit=glm(y~ ., data=stacking.data.train, family=binomial)
+summary(glm.stacking.fit)
+```
+
+> Build Na?ve Bayes model
+
+```{r}
+nb.stacking.fit=naiveBayes(y~ ., data=stacking.data.train)
+summary(nb.stacking.fit)
+```
+
+> Build Random Forest
+
+```{r}
+rf.stacking.fit=randomForest(y~ ., data=stacking.data.train, mtry = 2, ntree=1000)
+print(rf.stacking.fit)
+```
+
+> Predict on test for Random Forest
+
+```{r}
+rf.stacking.pred = predict(rf.stacking.fit, stacking.data.test, type = "response")
+
+rf.stacking.confusion.matrix <- table(rf.stacking.pred, test.dataset[,"y"])
+print(rf.stacking.confusion.matrix)
+
+rf.stacking.classifier.accuracy <- sum(diag(rf.stacking.confusion.matrix)) / sum(rf.stacking.confusion.matrix)
+print(rf.stacking.classifier.accuracy)
+
+roc.rf.stacking.pred <- rep(0, nrow(test.dataset))
+roc.rf.stacking.pred[rf.stacking.pred == "yes"] <- 1
+
+roc.stacking.test.dataset <- rep(0, nrow(test.dataset)) 
+roc.stacking.test.dataset[test.dataset[,"y"] == "yes"] <- 1
+
+rf.stacking.roc <- roc(roc.stacking.test.dataset, roc.rf.stacking.pred)
+plot(rf.stacking.roc)
+
+rf.stacking.auc <- auc(roc.stacking.test.dataset, roc.rf.stacking.pred)
+print(rf.stacking.auc)
+```
+
+> Predict on test for Na?ve Bayes
+
+```{r}
+nb.stacking.probs <- predict(nb.stacking.fit, newdata=stacking.data.test, type="raw")[,2]
+
+nb.stacking.pred <- predict(nb.stacking.fit, newdata=stacking.data.test, type="class")
+
+nb.stacking.confusion.matrix <- table(nb.stacking.pred, test.dataset[,"y"])
+print(nb.stacking.confusion.matrix)
+
+nb.stacking.classifier.accuracy <- sum(diag(nb.stacking.confusion.matrix)) / sum(nb.stacking.confusion.matrix)
+print(nb.stacking.classifier.accuracy)
+
+nb.stacking.roc <- roc(y ~ nb.stacking.probs, data = test.dataset)
+plot(nb.stacking.roc)
+
+nb.stacking.auc <- auc(y ~ nb.stacking.probs, data = test.dataset)
+print(nb.stacking.auc)
+```
+
+> Predict on test for logistic regression
+
+```{r}
+glm.stacking.probs <- predict(glm.stacking.fit, newdata=stacking.data.test, type="response")
+
+glm.stacking.pred <- rep("No", nrow(test.dataset))
+glm.stacking.pred[glm.stacking.probs > 0.5]="Yes"
+
+logistical.stacking.confusion.matrix <- table(glm.stacking.pred, test.dataset[,"y"])
+print(logistical.stacking.confusion.matrix)
+
+logistical.stacking.classifier.accuracy <- sum(diag(logistical.stacking.confusion.matrix)) / sum(logistical.stacking.confusion.matrix)
+print(logistical.stacking.classifier.accuracy)
+
+logistical.stacking.roc <- roc(y ~ glm.stacking.probs, data = test.dataset)
+plot(logistical.stacking.roc)
+
+logistical.stacking.auc <- auc(y ~ glm.stacking.probs, data = test.dataset)
+print(logistical.stacking.auc)
+```
+
+##Generate other seed to test accuracy on other train/test data
+```{r}
+seed.probabilities <- NULL
+
+for (i in 1:10)
+{
+    set.seed(i)
+    
+    test <- sample(nrow(dataset), round(nrow(dataset) * 0.33))
+    test.dataset <- dataset[test,]
+    train.dataset <- dataset[-test,]
+    
+    train <- sample(nrow(train.dataset), round(nrow(train.dataset) * 0.50))
+    train.baseline <- train.dataset[train,]
+    train.stacking <- train.dataset[-train,]
+    
+    glm.fit=glm(y~ ., data=train.baseline, family=binomial)
+
+    glm.probs <- predict(glm.fit, test.dataset, type="response")
+
+    glm.pred <- rep("No", nrow(test.dataset))
+    glm.pred[glm.probs > 0.5]="Yes"
+
+    logistical.confusion.matrix <- table(glm.pred, test.dataset[,"y"])
+    
+    logistical.classifier.accuracy <- sum(diag(logistical.confusion.matrix)) / sum(logistical.confusion.matrix)
+
+    rf.fit = randomForest(y~., data = train.baseline, mtry = 4, ntree=1000)
+
+    rf.pred = predict(rf.fit, test.dataset, type = "response")
+
+    rf.confusion.matrix <- table(rf.pred, test.dataset[,"y"])
+    
+    rf.classifier.accuracy <- sum(diag(rf.confusion.matrix)) / sum(rf.confusion.matrix)
+    
+    # fitting
+    tr.fit = tree(y~., train.baseline)
+
+    # making predictions
+    tr.pred = as.data.frame(predict(tr.fit, test.dataset, type = "vector"))
+
+    # disctretizing probabilities
+    tr.values.pred <- rep("no", nrow(test.dataset))
+    tr.values.pred[tr.pred$yes > 0.5]="yes"
+
+    # making confusion matrix
+    tr.confusion.matrix <- table(tr.values.pred, test.dataset[,"y"])
+
+    # calculating classifier accuracy
+    tr.classifier.accuracy <- sum(diag(tr.confusion.matrix)) / sum(tr.confusion.matrix)
+
+    # evaluating miss-classification rate
+    set.seed(i)
+    cv.tr.fit=cv.tree(tr.fit,FUN=prune.misclass)
+    
+    # getting best value
+    prune.tr.fit=prune.misclass(tr.fit,best=2)
+
+    # making predictions
+    tr.pred = as.data.frame(predict(prune.tr.fit, test.dataset, type = "vector"))
+    
+    # disctretizing probabilities
+    tr.values.pred <- rep("no", nrow(test.dataset))
+    tr.values.pred[tr.pred$yes > 0.5]="yes"
+    
+    # making confusion matrix
+    tr.confusion.matrix <- table(tr.values.pred, test.dataset[,"y"])
+
+    # calculating classifier accuracy
+    tr.classifier.accuracy <- sum(diag(tr.confusion.matrix)) / sum(tr.confusion.matrix)
+
+    nb.fit=naiveBayes(y~ ., data=train.baseline)
+    
+    nb.probs <- predict(nb.fit, test.dataset, type="raw")[,2]
+    
+    nb.pred <- predict(nb.fit, test.dataset, type="class")
+    
+    nb.confusion.matrix <- table(nb.pred, test.dataset[,"y"])
+    
+    nb.classifier.accuracy <- sum(diag(nb.confusion.matrix)) / sum(nb.confusion.matrix)
+    
+    seed.probabilities <- rbind(seed.probabilities, c(rf.classifier.accuracy, nb.classifier.accuracy, tr.classifier.accuracy, logistical.classifier.accuracy))
+}
+
+rf.seed.deviation <- sd(seed.probabilities[,1])
+nb.seed.deviation <- sd(seed.probabilities[,2])
+tr.seed.deviation <- sd(seed.probabilities[,3])
+logistical.seed.deviation <- sd(seed.probabilities[,4])
+
+```
+
+Algorithm name | Standard deviation
+--|--
+Random Forest | `r rf.seed.deviation`
+Naive  Bayes | `r nb.seed.deviation`
+Tree Classification | `r tr.seed.deviation`
+Logistical regression | `r logistical.seed.deviation`
+
+We can see on the table that all algorithms have low standard deviation which is good.
+
+## Simulation of a marketing campaign
+
+We modify the test dataset to create "favorable customers"" according the section *Data Analysis* so we set the age of customer to a random value between 60 and 80 years, the job to retired and the month to december. The goal is to see if a targeted advertising campaign could be usefull for the bank.
+
+```{r}
+dataset.favorable.cutomers <- test.dataset
+
+for( i in 1:nrow(dataset.favorable.cutomers)) {
+    dataset.favorable.cutomers[i, "age"] <- sample(60:80, 1)
+    dataset.favorable.cutomers[i, "job"] <- "retired"
+    dataset.favorable.cutomers[i, "month"] <- "dec"
+}
+```
+
+Now we have our data frame. Let's test the results with the previous random forest model.
+
+```{r}
+rf.fit = randomForest(y~., data = train.baseline, mtry = 4, ntree=1000)
+print(rf.fit)
+
+tc.rf.pred = predict(rf.fit, dataset.favorable.cutomers, type = "response")
+test.result <- rep(0, nrow(test.dataset))
+test.result[test.dataset$y=="yes"] <- 1
+```
+
+Let's calculate the sum of the total number of customer who subscribe a term deposit in the original test dataset.
+
+```{r}
+test.nb.success <- sum(test.result)
+print(test.nb.success)
+```
+
+We can have the ratio of success.
+
+```{r}
+test.success.ratio <- sum(test.result)/length(test.result)
+print(test.success.ratio)
+```
+
+Now, let's see the number of customer who subscribe a term deposit and the success ratio we get with the modified test dataset.
+
+```{r}
+tc.result <- rep(0, length(tc.rf.pred))
+tc.result[tc.rf.pred=="yes"] <- 1
+
+tc.nb.success <- sum(tc.result)
+print(tc.nb.success)
+
+tc.success.ratio <- sum(tc.result)/length(tc.result)
+print(tc.success.ratio)
+```
+
+So here are the results :
+
+-- | original dataset | dataset modified
+--|--|--
+Number of subscription | `r test.nb.success` | `r tc.nb.success`
+Ratio | `r test.success.ratio` | `r tc.success.ratio`
+
+We can see that with a targeted marketing campaign, we can multiply our chance of success by 4.
